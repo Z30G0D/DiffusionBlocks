@@ -243,3 +243,69 @@ class PlainClassifier(nn.Module):
         z = cond
         z = self.backbone.run_layers(z, cond, sigma_emb, list(range(self.cfg.num_layers)))
         return self.head(z)
+
+
+# --------------------------------------------------------------------------- #
+# Training & evaluation
+# --------------------------------------------------------------------------- #
+def train_baseline(model, loader, epochs, lr, device):
+    """Standard end-to-end training: forward all layers, backprop through all."""
+    model.to(device).train()
+    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    history = {"loss": []}
+    for _ in range(epochs):
+        running, n = 0.0, 0
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            logits = model(images)
+            loss = F.cross_entropy(logits, labels)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            running += loss.item() * images.shape[0]
+            n += images.shape[0]
+        history["loss"].append(running / n)
+    return history
+
+
+def train_diffusionblocks(model, loader, epochs, lr, device):
+    """Block-wise training: each step samples ONE block; only that block is in the graph."""
+    import random
+
+    model.to(device).train()
+    opt = torch.optim.AdamW(model.parameters(), lr=lr)
+    cfg = model.cfg
+    history = {"loss": [], "loss_per_block": {b: [] for b in range(cfg.num_blocks)}}
+    embed_table = model.label_embed
+    for _ in range(epochs * cfg.num_blocks):  # B x more steps to match total per-block updates
+        running, n = 0.0, 0
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device)
+            block_idx = random.randrange(cfg.num_blocks)
+            z0 = F.normalize(embed_table(labels), p=2, dim=-1)
+            sigma = sample_block_sigmas(block_idx, z0.shape[0], model.block_sigmas, cfg).to(device)
+            zt = z0 + sigma[:, None] * torch.randn_like(z0)
+            logits = model.denoise(images, zt, sigma, block_idx=block_idx)
+            ce = F.cross_entropy(logits, labels, reduction="none")
+            w = edm_loss_weight(sigma, cfg.sigma_data)
+            loss = (ce * w).mean()
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            running += loss.item() * images.shape[0]
+            n += images.shape[0]
+            history["loss_per_block"][block_idx].append(loss.item())
+        history["loss"].append(running / n)
+    return history
+
+
+@torch.no_grad()
+def evaluate(model, loader, device, diffusion: bool, num_steps: int | None = None):
+    model.to(device).eval()
+    correct, total = 0, 0
+    for images, labels in loader:
+        images, labels = images.to(device), labels.to(device)
+        logits = model.predict(images, num_steps=num_steps) if diffusion else model(images)
+        correct += (logits.argmax(-1) == labels).sum().item()
+        total += labels.shape[0]
+    return correct / total
