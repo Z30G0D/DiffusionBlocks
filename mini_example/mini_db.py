@@ -309,3 +309,51 @@ def evaluate(model, loader, device, diffusion: bool, num_steps: int | None = Non
         correct += (logits.argmax(-1) == labels).sum().item()
         total += labels.shape[0]
     return correct / total
+
+
+# --------------------------------------------------------------------------- #
+# Memory: analytic activation accounting (primary) + empirical peak (best-effort)
+# --------------------------------------------------------------------------- #
+def activation_bytes(model, images, z, sigma, blocks_in_graph: int) -> int:
+    """Sum bytes of residual-layer activations held for backprop.
+
+    DiffusionBlocks keeps ONE block in the graph (blocks_in_graph=1); end-to-end keeps all
+    (blocks_in_graph=num_blocks). We measure block 0 and scale by blocks_in_graph, since every
+    block has identical activation footprint.
+    """
+    cfg = model.cfg
+    captured = []
+    handles = [
+        layer.register_forward_hook(lambda m, i, o: captured.append(o.numel()))
+        for layer in model.backbone.layers[: cfg.num_layers // cfg.num_blocks]
+    ]
+    try:
+        c_skip, c_out, c_in, c_noise = edm_scalings(sigma, cfg.sigma_data)
+        cond = model.backbone.encode_image(images)
+        sigma_emb = model.backbone.sigma_embed(c_noise)
+        model.backbone.run_layers(
+            z * c_in[:, None], cond, sigma_emb, block_layer_indices(0, cfg)
+        )
+    finally:
+        for h in handles:
+            h.remove()
+    bytes_per_block = sum(captured) * 4  # float32
+    return bytes_per_block * blocks_in_graph
+
+
+def measure_peak_memory(fn) -> int:
+    """Best-effort peak bytes while running fn(). Uses MPS counters if available, else RSS."""
+    device = get_device()
+    if device.type == "mps":
+        torch.mps.empty_cache()
+        before = torch.mps.current_allocated_memory()
+        fn()
+        torch.mps.synchronize()
+        after = torch.mps.current_allocated_memory()
+        return max(0, after - before)
+    import resource
+
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    fn()
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return max(0, after - before)
