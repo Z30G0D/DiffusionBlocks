@@ -72,3 +72,55 @@ def load_mnist(n_train: int = 8000, n_test: int = 2000, batch_size: int = 128, s
         test, batch_size=batch_size, shuffle=False, collate_fn=collate
     )
     return train_loader, test_loader
+
+
+# --------------------------------------------------------------------------- #
+# EDM utilities (Karras et al. 2022) — preconditioning, sigma schedules, weights
+# --------------------------------------------------------------------------- #
+def get_block_sigmas(cfg: Config) -> list[float]:
+    """Partition the sigma axis into num_blocks ranges via the log-normal CDF."""
+    cdf_min = norm.cdf((np.log(cfg.sigma_min) - cfg.p_mean) / cfg.p_std)
+    cdf_max = norm.cdf((np.log(cfg.sigma_max) - cfg.p_mean) / cfg.p_std)
+    sigmas = []
+    for i in range(cfg.num_blocks + 1):
+        p = cdf_min + (cdf_max - cdf_min) * (i / cfg.num_blocks)
+        sigmas.append(float(np.exp(cfg.p_mean + cfg.p_std * norm.ppf(p))))
+    return sigmas
+
+
+def edm_scalings(sigma: torch.Tensor, sigma_data: float):
+    """Return (c_skip, c_out, c_in, c_noise) per EDM preconditioning."""
+    c_skip = sigma_data**2 / (sigma**2 + sigma_data**2)
+    c_out = sigma * sigma_data / (sigma**2 + sigma_data**2) ** 0.5
+    c_in = 1.0 / (sigma**2 + sigma_data**2) ** 0.5
+    c_noise = 0.25 * sigma.log()
+    return c_skip, c_out, c_in, c_noise
+
+
+def edm_loss_weight(sigma: torch.Tensor, sigma_data: float) -> torch.Tensor:
+    return (sigma**2 + sigma_data**2) / (sigma * sigma_data) ** 2
+
+
+def sample_block_sigmas(block_idx: int, n: int, block_sigmas: list[float], cfg: Config) -> torch.Tensor:
+    """Sample n sigmas inside block_idx's range (optionally widened by gamma)."""
+    lo, hi = block_sigmas[block_idx], block_sigmas[block_idx + 1]
+    if cfg.gamma > 0.0:
+        log_lo, log_hi = np.log(lo), np.log(hi)
+        span = log_hi - log_lo
+        lo = max(np.exp(log_lo - cfg.gamma * span), block_sigmas[0])
+        hi = min(np.exp(log_hi + cfg.gamma * span), block_sigmas[-1])
+    cdf_lo = norm.cdf((np.log(lo) - cfg.p_mean) / cfg.p_std)
+    cdf_hi = norm.cdf((np.log(hi) - cfg.p_mean) / cfg.p_std)
+    u = np.random.uniform(cdf_lo, cdf_hi, n)
+    sigma = np.exp(cfg.p_mean + cfg.p_std * norm.ppf(u))
+    return torch.from_numpy(sigma).float()
+
+
+def get_inference_sigmas(num_steps: int, cfg: Config) -> torch.Tensor:
+    """Descending sigma schedule (high noise -> low noise) for the inference ODE walk."""
+    cdf_min = norm.cdf((np.log(cfg.sigma_min) - cfg.p_mean) / cfg.p_std)
+    cdf_max = norm.cdf((np.log(cfg.sigma_max) - cfg.p_mean) / cfg.p_std)
+    cdf_points = np.linspace(cdf_min, cdf_max, num_steps)
+    sigmas = np.exp(cfg.p_mean + cfg.p_std * norm.ppf(cdf_points))
+    sigmas = torch.from_numpy(sigmas).float()
+    return torch.flip(sigmas, dims=[0])  # descending
