@@ -124,3 +124,49 @@ def get_inference_sigmas(num_steps: int, cfg: Config) -> torch.Tensor:
     sigmas = np.exp(cfg.p_mean + cfg.p_std * norm.ppf(cdf_points))
     sigmas = torch.from_numpy(sigmas).float()
     return torch.flip(sigmas, dims=[0])  # descending
+
+
+# --------------------------------------------------------------------------- #
+# Shared residual-MLP backbone
+# --------------------------------------------------------------------------- #
+class FiLMResidualLayer(nn.Module):
+    """z <- z + gate * MLP(AdaLN(z | cond + sigma_emb)). One discretized ODE step."""
+
+    def __init__(self, H: int):
+        super().__init__()
+        self.norm = nn.LayerNorm(H, elementwise_affine=False)
+        self.film = nn.Linear(H, 2 * H)
+        self.mlp = nn.Sequential(nn.Linear(H, H), nn.GELU(), nn.Linear(H, H))
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, z: torch.Tensor, cond: torch.Tensor, sigma_emb: torch.Tensor) -> torch.Tensor:
+        scale, shift = self.film(cond + sigma_emb).chunk(2, dim=-1)
+        h = self.norm(z) * (1 + scale) + shift
+        return z + self.mlp(h)
+
+
+class ResidualBackbone(nn.Module):
+    """Image encoder + sigma embedder + L FiLM residual layers (grouped into blocks)."""
+
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.encoder = nn.Sequential(
+            nn.Linear(cfg.image_dim, 256), nn.GELU(), nn.Linear(256, cfg.H)
+        )
+        self.sigma_mlp = nn.Sequential(
+            nn.Linear(1, cfg.H), nn.GELU(), nn.Linear(cfg.H, cfg.H)
+        )
+        self.layers = nn.ModuleList([FiLMResidualLayer(cfg.H) for _ in range(cfg.num_layers)])
+
+    def encode_image(self, images: torch.Tensor) -> torch.Tensor:
+        return self.encoder(images)
+
+    def sigma_embed(self, c_noise: torch.Tensor) -> torch.Tensor:
+        return self.sigma_mlp(c_noise.unsqueeze(-1))
+
+    def run_layers(self, z, cond, sigma_emb, layer_indices: list[int]) -> torch.Tensor:
+        for i in layer_indices:
+            z = self.layers[i](z, cond, sigma_emb)
+        return z

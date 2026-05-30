@@ -19,3 +19,36 @@ def test_block_layer_indices_partition_all_layers():
     assert idx == [[0, 1], [2, 3], [4, 5]]
     flat = [i for block in idx for i in block]
     assert flat == list(range(cfg.num_layers))
+
+
+def test_backbone_run_layers_preserves_shape():
+    cfg = mini_db.Config()
+    bb = mini_db.ResidualBackbone(cfg)
+    z = torch.randn(4, cfg.H)
+    cond = torch.randn(4, cfg.H)
+    sig_emb = torch.randn(4, cfg.H)
+    out = bb.run_layers(z, cond, sig_emb, layer_indices=[0, 1])
+    assert out.shape == (4, cfg.H)
+
+
+def test_backbone_run_layers_only_runs_requested_block():
+    cfg = mini_db.Config(num_layers=6, num_blocks=3)
+    bb = mini_db.ResidualBackbone(cfg)
+    z = torch.randn(2, cfg.H)
+    cond = torch.zeros(2, cfg.H)
+    sig_emb = torch.zeros(2, cfg.H)
+    # running only block 0's layers must equal manually running layers 0 and 1
+    out_block = bb.run_layers(z, cond, sig_emb, layer_indices=[0, 1])
+    manual = z
+    for i in [0, 1]:
+        manual = bb.layers[i](manual, cond, sig_emb)
+    assert torch.allclose(out_block, manual, atol=1e-6)
+
+
+def test_encode_image_and_sigma_embed_shapes():
+    cfg = mini_db.Config()
+    bb = mini_db.ResidualBackbone(cfg)
+    img = torch.randn(5, cfg.image_dim)
+    assert bb.encode_image(img).shape == (5, cfg.H)
+    c_noise = torch.randn(5)
+    assert bb.sigma_embed(c_noise).shape == (5, cfg.H)
