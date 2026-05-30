@@ -170,3 +170,58 @@ class ResidualBackbone(nn.Module):
         for i in layer_indices:
             z = self.layers[i](z, cond, sigma_emb)
         return z
+
+
+# --------------------------------------------------------------------------- #
+# Diffusion classifier: denoise a label embedding, conditioned on the image
+# --------------------------------------------------------------------------- #
+class DiffusionClassifier(nn.Module):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.backbone = ResidualBackbone(cfg)
+        self.label_embed = nn.Embedding(cfg.num_classes, cfg.H)
+        self.block_sigmas = get_block_sigmas(cfg)
+
+    def class_embeddings(self) -> torch.Tensor:
+        """L2-normalized target embeddings z0 for every class."""
+        return F.normalize(self.label_embed.weight, p=2, dim=-1)
+
+    def estimate_block(self, sigma: torch.Tensor) -> int:
+        """Map a sigma (or batch of sigmas) to the responsible block index."""
+        edges = torch.tensor(self.block_sigmas, device=sigma.device)
+        b = torch.bucketize(sigma, edges, right=True) - 1
+        b = torch.clamp(b, 0, self.cfg.num_blocks - 1).long()
+        vals, counts = b.unique(return_counts=True)
+        return int(vals[counts.argmax()].item())
+
+    def denoise(self, images, z, sigma, block_idx=None):
+        """Run ONE block to denoise z, return class logits. No other block is touched."""
+        if block_idx is None:
+            block_idx = self.estimate_block(sigma)
+        c_skip, c_out, c_in, c_noise = edm_scalings(sigma, self.cfg.sigma_data)
+        cond = self.backbone.encode_image(images)
+        sigma_emb = self.backbone.sigma_embed(c_noise)
+        layer_indices = block_layer_indices(block_idx, self.cfg)
+        h = self.backbone.run_layers(z * c_in[:, None], cond, sigma_emb, layer_indices)
+        denoised = h * c_out[:, None] + z * c_skip[:, None]
+        logits = F.linear(denoised, self.class_embeddings())
+        return logits
+
+    @torch.no_grad()
+    def predict(self, images, num_steps=None):
+        """Inference: start from noise, walk DOWN the sigma ladder one block per Euler step."""
+        cfg = self.cfg
+        num_steps = num_steps or cfg.num_blocks
+        sigmas = get_inference_sigmas(num_steps, cfg).to(images.device)
+        z = torch.randn(images.shape[0], cfg.H, device=images.device)
+        z = z * (1.0 + sigmas[0] ** 2) ** 0.5
+        embed = self.class_embeddings()
+        for i in range(num_steps - 1):
+            sigma = sigmas[i].expand(images.shape[0])
+            logits = self.denoise(images, z, sigma)
+            denoised = F.softmax(logits, dim=-1) @ embed
+            d = (z - denoised) / sigma[:, None]
+            z = z + (sigmas[i + 1] - sigmas[i]) * d
+        last = sigmas[-1].expand(images.shape[0])
+        return self.denoise(images, z, last)

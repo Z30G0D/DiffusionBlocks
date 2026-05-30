@@ -52,3 +52,36 @@ def test_encode_image_and_sigma_embed_shapes():
     assert bb.encode_image(img).shape == (5, cfg.H)
     c_noise = torch.randn(5)
     assert bb.sigma_embed(c_noise).shape == (5, cfg.H)
+
+
+def test_diffusion_denoise_logits_shape():
+    cfg = mini_db.Config()
+    model = mini_db.DiffusionClassifier(cfg)
+    images = torch.randn(4, cfg.image_dim)
+    z = torch.randn(4, cfg.H)
+    sigma = torch.full((4,), 1.0)
+    logits = model.denoise(images, z, sigma, block_idx=1)
+    assert logits.shape == (4, cfg.num_classes)
+
+
+def test_diffusion_denoise_block_independent_of_other_blocks():
+    cfg = mini_db.Config()
+    model = mini_db.DiffusionClassifier(cfg)
+    images = torch.randn(2, cfg.image_dim)
+    z = torch.randn(2, cfg.H)
+    sigma = torch.full((2,), 2.0)
+    # mutating a layer NOT in block 0 must not change block 0's output
+    out_before = model.denoise(images, z, sigma, block_idx=0)
+    with torch.no_grad():
+        for p in model.backbone.layers[4].parameters():
+            p.add_(1.0)
+    out_after = model.denoise(images, z, sigma, block_idx=0)
+    assert torch.allclose(out_before, out_after, atol=1e-6)
+
+
+def test_diffusion_predict_returns_class_logits():
+    cfg = mini_db.Config()
+    model = mini_db.DiffusionClassifier(cfg)
+    images = torch.randn(3, cfg.image_dim)
+    logits = model.predict(images, num_steps=cfg.num_blocks)
+    assert logits.shape == (3, cfg.num_classes)
