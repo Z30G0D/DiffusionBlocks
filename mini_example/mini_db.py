@@ -190,7 +190,7 @@ class DiffusionClassifier(nn.Module):
     def estimate_block(self, sigma: torch.Tensor) -> int:
         """Map a sigma (or batch of sigmas) to the responsible block index."""
         edges = torch.tensor(self.block_sigmas, device=sigma.device)
-        b = torch.bucketize(sigma, edges, right=True) - 1
+        b = torch.bucketize(sigma.contiguous(), edges, right=True) - 1
         b = torch.clamp(b, 0, self.cfg.num_blocks - 1).long()
         vals, counts = b.unique(return_counts=True)
         return int(vals[counts.argmax()].item())
