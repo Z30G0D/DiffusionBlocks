@@ -12,6 +12,7 @@ def test_activation_bytes_scales_with_blocks_in_graph():
 
     full = mini_db.activation_bytes(model, images, z, sigma, blocks_in_graph=cfg.num_blocks)
     one = mini_db.activation_bytes(model, images, z, sigma, blocks_in_graph=1)
+    assert one > 0  # a single block holds a non-trivial amount of activation memory
     assert full > one
     # roughly B x more activations when all blocks are in the graph
     assert abs(full / one - cfg.num_blocks) < 1.0

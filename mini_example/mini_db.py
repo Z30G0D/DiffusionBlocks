@@ -20,6 +20,9 @@ class Config:
     num_blocks: int = 3
     num_classes: int = 10
     image_dim: int = 28 * 28
+    # sigma_data is EDM's assumed data scale. Our class targets are L2-normalized, so the
+    # "true" per-dim scale is ~1/sqrt(H); 0.5 is a mild over-estimate that still trains fine
+    # and keeps us aligned with the paper's default. Good enough for a teaching toy.
     sigma_data: float = 0.5
     sigma_min: float = 0.002
     sigma_max: float = 80.0
@@ -268,10 +271,18 @@ def train_baseline(model, loader, epochs, lr, device):
     return history
 
 
-def train_diffusionblocks(model, loader, epochs, lr, device):
-    """Block-wise training: each step samples ONE block; only that block is in the graph."""
+def train_diffusionblocks(model, loader, epochs, lr, device, seed=None):
+    """Block-wise training: each step samples ONE block; only that block is in the graph.
+
+    Pass `seed` to make block sampling and noise reproducible (the loop draws from `random`
+    and `np.random`, so without a seed results vary run to run).
+    """
     import random
 
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
     model.to(device).train()
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
     cfg = model.cfg

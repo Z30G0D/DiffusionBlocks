@@ -16,6 +16,7 @@ def _toy_loader(cfg, n=128, batch_size=32, seed=0):
 
 
 def test_train_baseline_loss_decreases():
+    torch.manual_seed(0)
     cfg = mini_db.Config()
     model = mini_db.PlainClassifier(cfg)
     loader = _toy_loader(cfg)
@@ -23,12 +24,18 @@ def test_train_baseline_loss_decreases():
     assert hist["loss"][-1] < hist["loss"][0]
 
 
-def test_train_diffusionblocks_loss_decreases():
+def test_train_diffusionblocks_learns():
+    # The block-wise loss is EDM-weighted and block-randomized, so its raw value is noisy.
+    # Instead of asserting the loss curve, we assert the model actually LEARNS the toy task:
+    # accuracy ends up well above the 10% chance level. `seed` makes it deterministic.
     cfg = mini_db.Config()
     model = mini_db.DiffusionClassifier(cfg)
     loader = _toy_loader(cfg)
-    hist = mini_db.train_diffusionblocks(model, loader, epochs=5, lr=1e-3, device=torch.device("cpu"))
-    assert hist["loss"][-1] < hist["loss"][0]
+    mini_db.train_diffusionblocks(
+        model, loader, epochs=8, lr=1e-3, device=torch.device("cpu"), seed=0
+    )
+    acc = mini_db.evaluate(model, loader, device=torch.device("cpu"), diffusion=True)
+    assert acc > 0.3
 
 
 def test_evaluate_returns_fraction():
