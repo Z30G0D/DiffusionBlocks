@@ -225,3 +225,21 @@ class DiffusionClassifier(nn.Module):
             z = z + (sigmas[i + 1] - sigmas[i]) * d
         last = sigmas[-1].expand(images.shape[0])
         return self.denoise(images, z, last)
+
+
+# --------------------------------------------------------------------------- #
+# Plain classifier baseline: SAME backbone, standard cross-entropy, no diffusion
+# --------------------------------------------------------------------------- #
+class PlainClassifier(nn.Module):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.backbone = ResidualBackbone(cfg)
+        self.head = nn.Linear(cfg.H, cfg.num_classes)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        cond = self.backbone.encode_image(images)
+        sigma_emb = torch.zeros_like(cond)
+        z = cond
+        z = self.backbone.run_layers(z, cond, sigma_emb, list(range(self.cfg.num_layers)))
+        return self.head(z)

@@ -85,3 +85,13 @@ def test_diffusion_predict_returns_class_logits():
     images = torch.randn(3, cfg.image_dim)
     logits = model.predict(images, num_steps=cfg.num_blocks)
     assert logits.shape == (3, cfg.num_classes)
+
+
+def test_plain_classifier_logits_shape_and_uses_all_layers():
+    cfg = mini_db.Config()
+    model = mini_db.PlainClassifier(cfg)
+    images = torch.randn(4, cfg.image_dim)
+    logits = model(images)
+    assert logits.shape == (4, cfg.num_classes)
+    # backbone has the same number of layers as the diffusion model
+    assert len(model.backbone.layers) == cfg.num_layers
