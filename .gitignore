@@ -215,3 +215,6 @@ __marimo__/
 sbatch.sh
 .slurm_cache/
 test.ipynb
+
+# Local planning/spec docs (superpowers workflow) — keep out of the repo
+docs/superpowers/
