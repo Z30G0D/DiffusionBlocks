@@ -1,3 +1,7 @@
+# This is a forked repository to showcase the Articles' crux mechanism through a mini example:
+
+Link: https://github.com/Z30G0D/DiffusionBlocks/tree/main/mini_example
+
 # DiffusionBlocks (ICLR 2026)
 
 <div align="center">
